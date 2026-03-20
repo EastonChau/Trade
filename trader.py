@@ -30,12 +30,13 @@ SECRET_KEY = "K1Jk6lCsSEpBAktHua73mi4kowWSE9huy1JHS0XbiTT3ilDUTsrayWswniuB6pYF"
 
 BASE_URL = "https://mock-api.roostoo.com"
 
-TRADING_PAIRS = ["BTC/USD", "ETH/USD"]
 MAX_POSITIONS = 2
 ATR_PERIOD = 14
 STOP_LOSS_ATR = 1.5
 TAKE_PROFIT_ATR = 3.0
 TICK_INTERVAL = 60
+MIN_VOLUME_USD = 1000000
+MIN_ATR_PERCENT = 0.005
 
 def get_timestamp():
     return str(int(time.time() * 1000))
@@ -79,17 +80,17 @@ def get_exchange_info():
         logger.error(f"Exchange info error: {e}")
         return None
 
-def get_ticker(pair=None):
+def get_all_tickers():
     url = f"{BASE_URL}/v3/ticker"
     params = {'timestamp': get_timestamp()}
-    if pair:
-        params['pair'] = pair
     try:
         res = requests.get(url, params=params, timeout=10)
-        return res.json()
+        data = res.json()
+        if data.get('Success'):
+            return data.get('Data', {})
     except Exception as e:
-        logger.error(f"Ticker error for {pair}: {e}")
-        return None
+        logger.error(f"Ticker error: {e}")
+    return {}
 
 def get_balance():
     url = f"{BASE_URL}/v3/balance"
@@ -121,44 +122,6 @@ def place_order(pair, side, quantity, price=None):
         return res.json()
     except Exception as e:
         logger.error(f"Order error: {e}")
-        return None
-
-def cancel_order(order_id=None, pair=None):
-    url = f"{BASE_URL}/v3/cancel_order"
-    payload = {}
-    if order_id:
-        payload['order_id'] = str(order_id)
-    elif pair:
-        payload['pair'] = pair
-    
-    headers, _, total_params = get_signed_headers(payload)
-    headers['Content-Type'] = 'application/x-www-form-urlencoded'
-    
-    try:
-        res = requests.post(url, headers=headers, data=total_params, timeout=10)
-        return res.json()
-    except Exception as e:
-        logger.error(f"Cancel error: {e}")
-        return None
-
-def query_order(order_id=None, pair=None, pending_only=None):
-    url = f"{BASE_URL}/v3/query_order"
-    payload = {}
-    if order_id:
-        payload['order_id'] = str(order_id)
-    elif pair:
-        payload['pair'] = pair
-        if pending_only is not None:
-            payload['pending_only'] = 'TRUE' if pending_only else 'FALSE'
-    
-    headers, _, total_params = get_signed_headers(payload)
-    headers['Content-Type'] = 'application/x-www-form-urlencoded'
-    
-    try:
-        res = requests.post(url, headers=headers, data=total_params, timeout=10)
-        return res.json()
-    except Exception as e:
-        logger.error(f"Query error: {e}")
         return None
 
 class VolatilityAnalyzer:
@@ -273,13 +236,53 @@ class SentimentAnalyzer:
         trend = np.polyfit(range(len(recent)), recent, 1)[0]
         return trend
 
+class AssetSelector:
+    def __init__(self):
+        self.available_pairs = []
+        self.ranked_pairs = []
+    
+    def fetch_available_pairs(self):
+        exchange_info = get_exchange_info()
+        if exchange_info and exchange_info.get('TradePairs'):
+            self.available_pairs = list(exchange_info['TradePairs'].keys())
+            logger.info(f"Found {len(self.available_pairs)} tradable pairs")
+            return self.available_pairs
+        return []
+    
+    def rank_assets_by_volume(self, tickers):
+        assets_with_metrics = []
+        
+        for pair, data in tickers.items():
+            coin_trade_value = data.get('CoinTradeValue', 0)
+            unit_trade_value = data.get('UnitTradeValue', 0)
+            last_price = data.get('LastPrice', 0)
+            change_24h = abs(data.get('Change', 0))
+            
+            if coin_trade_value > MIN_VOLUME_USD and last_price > 0:
+                score = coin_trade_value * (1 + change_24h)
+                assets_with_metrics.append({
+                    'pair': pair,
+                    'volume': coin_trade_value,
+                    'price': last_price,
+                    'volatility_24h': change_24h,
+                    'score': score
+                })
+        
+        assets_with_metrics.sort(key=lambda x: x['score'], reverse=True)
+        self.ranked_pairs = [a['pair'] for a in assets_with_metrics]
+        
+        logger.info(f"Top 10 assets by volume: {self.ranked_pairs[:10]}")
+        return self.ranked_pairs[:MAX_POSITIONS * 2]
+
 class TradingBot:
     def __init__(self):
         self.volatility = VolatilityAnalyzer(ATR_PERIOD)
         self.sentiment = SentimentAnalyzer()
+        self.asset_selector = AssetSelector()
         self.positions = {}
         self.running = False
         self.balance_history = deque(maxlen=100)
+        self.active_trading_pairs = []
     
     def get_total_equity(self):
         balance_data = get_balance()
@@ -293,29 +296,39 @@ class TradingBot:
             if asset == 'USD':
                 total_usd += data.get('Free', 0) + data.get('Lock', 0)
             else:
-                ticker = get_ticker(f"{asset}/USD")
-                if ticker and ticker.get('Success'):
-                    price = ticker.get('Data', {}).get(f"{asset}/USD", {}).get('LastPrice', 0)
+                ticker_data = get_all_tickers()
+                pair = f"{asset}/USD"
+                if pair in ticker_data:
+                    price = ticker_data[pair].get('LastPrice', 0)
                     if price > 0:
                         total_usd += (data.get('Free', 0) + data.get('Lock', 0)) * price
         
         self.balance_history.append(total_usd)
         return total_usd
     
+    def update_trading_pairs(self):
+        tickers = get_all_tickers()
+        if not tickers:
+            return
+        
+        self.asset_selector.rank_assets_by_volume(tickers)
+        
+        if not self.active_trading_pairs:
+            self.active_trading_pairs = self.asset_selector.ranked_pairs[:MAX_POSITIONS * 2]
+            logger.info(f"Active trading pairs: {self.active_trading_pairs}")
+    
     def get_market_data(self, pair):
-        ticker_data = get_ticker(pair)
-        if not ticker_data or not ticker_data.get('Success'):
+        tickers = get_all_tickers()
+        if pair not in tickers:
             return None
         
-        data = ticker_data.get('Data', {}).get(pair, {})
-        if not data:
-            return None
-        
+        data = tickers[pair]
         return {
             'price': float(data.get('LastPrice', 0)),
             'bid': float(data.get('MaxBid', 0)),
             'ask': float(data.get('MinAsk', 0)),
-            'change_24h': float(data.get('Change', 0))
+            'change_24h': float(data.get('Change', 0)),
+            'volume_24h': float(data.get('CoinTradeValue', 0))
         }
     
     def calculate_position_size(self, equity, price, atr):
@@ -331,20 +344,13 @@ class TradingBot:
         
         return min(position_size, max_size_by_value)
     
-    def should_trade_pair(self, pair, market_data):
-        volume = market_data.get('coin_trade_value', 0)
-        if pair == "BTC/USD":
-            return True
-        elif pair == "ETH/USD":
-            return True
-        return False
-    
     def generate_signal(self, pair, market_data, atr, sentiment_score, sentiment_trend):
         if atr is None or atr == 0:
             return 'HOLD', 0
         
         price = market_data['price']
         change_24h = market_data['change_24h']
+        volume = market_data['volume_24h']
         
         technical_score = 0
         if change_24h > 0.02:
@@ -352,14 +358,17 @@ class TradingBot:
         elif change_24h < -0.02:
             technical_score -= 0.3
         
-        if price > market_data['bid']:
-            technical_score += 0.2
-        
         atr_pct = atr / price
-        if atr_pct > 0.03:
+        if atr_pct > MIN_ATR_PERCENT:
             technical_score += 0.2
-        elif atr_pct < 0.01:
+        elif atr_pct < 0.003:
             technical_score -= 0.2
+        
+        volume_score = min(volume / 10000000, 0.3)
+        if change_24h > 0:
+            technical_score += volume_score
+        else:
+            technical_score -= volume_score
         
         combined_score = (sentiment_score * 0.6) + (technical_score * 0.4)
         
@@ -463,35 +472,46 @@ class TradingBot:
             del self.positions[pair]
     
     def check_portfolio_limits(self):
-        if len(self.positions) >= MAX_POSITIONS:
-            return False
-        return True
+        return len(self.positions) < MAX_POSITIONS
     
     def run(self):
         self.running = True
+        
+        available_pairs = self.asset_selector.fetch_available_pairs()
+        if not available_pairs:
+            logger.error("No tradable pairs found")
+            return
+        
         logger.info("=" * 60)
         logger.info("TRADING BOT STARTED")
-        logger.info(f"Trading Pairs: {TRADING_PAIRS}")
+        logger.info(f"Total Tradable Assets: {len(available_pairs)}")
         logger.info(f"Max Positions: {MAX_POSITIONS}")
         logger.info(f"Stop Loss: {STOP_LOSS_ATR}x ATR | Take Profit: {TAKE_PROFIT_ATR}x ATR")
+        logger.info(f"Min Volume Filter: ${MIN_VOLUME_USD:,.0f}")
         logger.info("=" * 60)
         
-        price_history = {pair: deque(maxlen=100) for pair in TRADING_PAIRS}
+        scan_counter = 0
         
         while self.running:
             try:
+                if scan_counter % 5 == 0:
+                    self.update_trading_pairs()
+                
                 equity = self.get_total_equity()
                 logger.info(f"Total Equity: ${equity:.2f} | Active Positions: {len(self.positions)}")
                 
-                for pair in TRADING_PAIRS:
+                if not self.active_trading_pairs:
+                    time.sleep(TICK_INTERVAL)
+                    scan_counter += 1
+                    continue
+                
+                for pair in self.active_trading_pairs:
                     market_data = self.get_market_data(pair)
-                    if not market_data:
+                    if not market_data or market_data['price'] == 0:
                         continue
                     
                     price = market_data['price']
-                    price_history[pair].append(price)
                     self.volatility.update_price(pair, price)
-                    
                     atr = self.volatility.calculate_atr(pair)
                     
                     if pair in self.positions:
@@ -499,11 +519,11 @@ class TradingBot:
                         continue
                     
                     if not self.check_portfolio_limits():
-                        logger.debug("Portfolio limit reached, skipping new entries")
                         break
                     
-                    sentiment_score = self.sentiment.calculate_sentiment(pair.split('/')[0])
-                    sentiment_trend = self.sentiment.get_sentiment_trend(pair.split('/')[0])
+                    symbol = pair.split('/')[0]
+                    sentiment_score = self.sentiment.calculate_sentiment(symbol)
+                    sentiment_trend = self.sentiment.get_sentiment_trend(symbol)
                     
                     signal, confidence = self.generate_signal(
                         pair, market_data, atr, sentiment_score, sentiment_trend
@@ -511,15 +531,16 @@ class TradingBot:
                     
                     if signal != 'HOLD' and confidence >= 65:
                         logger.info(f"{pair} | Signal: {signal} | Confidence: {confidence:.1f}%")
-                        logger.info(f"Sentiment: {sentiment_score:.3f} | Trend: {sentiment_trend:.3f}")
+                        logger.info(f"Volume: ${market_data['volume_24h']:,.0f} | 24h Change: {market_data['change_24h']*100:.2f}%")
                         if atr:
                             logger.info(f"ATR: ${atr:.2f} ({atr/price*100:.2f}%)")
                         
                         self.execute_trade(pair, signal, confidence, market_data, atr)
                     
-                    time.sleep(1)
+                    time.sleep(0.5)
                 
                 time.sleep(TICK_INTERVAL)
+                scan_counter += 1
                 
             except KeyboardInterrupt:
                 logger.info("Shutdown signal received")
@@ -540,10 +561,6 @@ if __name__ == "__main__":
         server_time = get_server_time()
         if server_time:
             logger.info(f"Connected to Roostoo API | Server Time: {server_time}")
-        
-        exchange_info = get_exchange_info()
-        if exchange_info:
-            logger.info("Exchange info retrieved successfully")
         
         bot = TradingBot()
         bot.run()
