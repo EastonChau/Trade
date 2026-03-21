@@ -23,8 +23,9 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # ==================== CONFIG ====================
-API_KEY = "1KPVEQfk2NJ6AdxP4tPb36MhKNbOFhNLhVjAjKpVq9TDPcusQONWODpe2iVjEOca"         
-SECRET_KEY = "ss3x6EvpsIsunKx1takYy99rW1Mifiy6h7edKWePc2JdW1zUE1zn9x70KNMtT4zq"       
+# REPLACE THESE WITH YOUR ACTUAL API KEYS FROM ROOSTOO
+API_KEY = "1KPVEQfk2NJ6AdxP4tPb36MhKNbOFhNLhVjAjKpVq9TDPcusQONWODpe2iVjEOca"
+SECRET_KEY = "ss3x6EvpsIsunKx1takYy99rW1Mifiy6h7edKWePc2JdW1zUE1zn9x70KNMtT4zq"
 
 BASE_URL = "https://mock-api.roostoo.com"
 
@@ -36,49 +37,66 @@ TICK_INTERVAL = 60          # seconds
 MIN_VOLUME_USD = 1000000
 MIN_ATR_PERCENT = 0.005
 
-
+# Helper Functions
 def get_timestamp_ms():
+    """Return 13-digit millisecond timestamp"""
     return str(int(time.time() * 1000))
 
 def generate_signature(payload):
+    """Generate HMAC SHA256 signature for API requests"""
+    # Sort keys alphabetically
     sorted_keys = sorted(payload.keys())
+    # Create query string
     total_params = "&".join(f"{k}={payload[k]}" for k in sorted_keys)
+    # Generate signature
     signature = hmac.new(
         SECRET_KEY.encode('utf-8'),
         total_params.encode('utf-8'),
         hashlib.sha256
     ).hexdigest()
-    return signature
+    return signature, total_params
 
 def get_signed_headers(payload=None):
+    """Get headers with signature for authenticated endpoints"""
     if payload is None:
         payload = {}
-    payload['timestamp'] = get_timestamp_ms()
-    signature = generate_signature(payload)
+    
+    # Add timestamp if not present
+    if 'timestamp' not in payload:
+        payload['timestamp'] = get_timestamp_ms()
+    
+    # Generate signature and params string
+    signature, params_string = generate_signature(payload)
+    
     headers = {
         'RST-API-KEY': API_KEY,
         'MSG-SIGNATURE': signature,
     }
-    return headers, payload
+    
+    return headers, payload, params_string
 
 def check_api_keys():
+    """Validate API keys are present"""
     if not API_KEY.strip() or not SECRET_KEY.strip():
-        logger.error("API_KEY and/or SECRET_KEY are empty. Edit the script.")
+        logger.error("API_KEY and/or SECRET_KEY are empty. Please add your actual API keys.")
         return False
     return True
 
 def get_server_time():
+    """Get server time (public endpoint)"""
     url = f"{BASE_URL}/v3/serverTime"
     try:
         res = requests.get(url, timeout=10)
         res.raise_for_status()
         data = res.json()
+        logger.info(f"Server time: {data.get('ServerTime', 0)}")
         return int(data.get('ServerTime', 0))
     except Exception as e:
         logger.error(f"get_server_time failed: {e}")
         return None
 
 def get_exchange_info():
+    """Get exchange information (public endpoint)"""
     url = f"{BASE_URL}/v3/exchangeInfo"
     try:
         res = requests.get(url, timeout=10)
@@ -89,7 +107,7 @@ def get_exchange_info():
         return None
 
 def get_all_tickers():
-    # Ticker does NOT require authentication signature — only timestamp in query
+    """Get all tickers (requires timestamp)"""
     url = f"{BASE_URL}/v3/ticker"
     params = {'timestamp': get_timestamp_ms()}
     try:
@@ -106,87 +124,112 @@ def get_all_tickers():
         return {}
 
 def get_balance():
+    """Get wallet balance (signed endpoint)"""
     if not check_api_keys():
         return None
+    
     url = f"{BASE_URL}/v3/balance"
-    headers, payload = get_signed_headers()
+    headers, payload, _ = get_signed_headers({})
+    
     try:
         res = requests.get(url, headers=headers, params=payload, timeout=10)
         res.raise_for_status()
         data = res.json()
         if data.get('Success'):
+            logger.info(f"Balance retrieved successfully")
             return data
         else:
             logger.error(f"Balance error: {data.get('ErrMsg', 'Unknown')}")
             return None
     except Exception as e:
         logger.error(f"get_balance failed: {e}")
+        if hasattr(e, 'response') and e.response:
+            logger.error(f"Response: {e.response.text}")
         return None
 
 def get_pending_count():
+    """Get pending order count (signed endpoint)"""
     if not check_api_keys():
         return None
+    
     url = f"{BASE_URL}/v3/pending_count"
-    headers, payload = get_signed_headers()
+    headers, payload, _ = get_signed_headers({})
+    
     try:
         res = requests.get(url, headers=headers, params=payload, timeout=10)
         res.raise_for_status()
         data = res.json()
         if data.get('Success'):
-            return data.get('PendingCount', 0)
+            return data.get('TotalPending', 0)
         else:
-            logger.warning(f"Pending count error: {data.get('ErrMsg')}")
-            return None
+            logger.warning(f"Pending count: {data.get('ErrMsg')}")
+            return 0
     except Exception as e:
         logger.warning(f"get_pending_count failed: {e}")
         return None
 
 def place_order(pair, side, quantity, price=None):
+    """Place an order (signed endpoint)"""
     if not check_api_keys():
         return None
+    
     url = f"{BASE_URL}/v3/place_order"
+    
+    # Determine order type
     order_type = "LIMIT" if price else "MARKET"
+    
+    # Prepare payload
     payload = {
         'pair': pair,
         'side': side.upper(),
         'type': order_type,
         'quantity': str(quantity),
+        'timestamp': get_timestamp_ms()
     }
+    
     if price is not None:
         payload['price'] = str(price)
-
-    headers, payload = get_signed_headers(payload)
+    
+    # Get signed headers and params string
+    headers, payload, params_string = get_signed_headers(payload)
     headers['Content-Type'] = 'application/x-www-form-urlencoded'
-
+    
     try:
-        res = requests.post(url, headers=headers, data=payload, timeout=10)
+        # Send POST request with data as form-encoded
+        res = requests.post(url, headers=headers, data=params_string, timeout=10)
         res.raise_for_status()
         data = res.json()
+        
         if data.get('Success'):
-            logger.info(f"Order placed successfully: {data.get('OrderDetail', {})}")
+            logger.info(f"Order placed: {data.get('OrderDetail', {})}")
             return data
         else:
             logger.error(f"Place order failed: {data.get('ErrMsg', 'Unknown error')}")
             return None
     except Exception as e:
         logger.error(f"place_order failed: {e}")
+        if hasattr(e, 'response') and e.response:
+            logger.error(f"Response: {e.response.text}")
         return None
 
 def cancel_order(order_id=None, pair=None):
+    """Cancel order(s) (signed endpoint)"""
     if not check_api_keys():
         return None
+    
     url = f"{BASE_URL}/v3/cancel_order"
-    payload = {}
+    payload = {'timestamp': get_timestamp_ms()}
+    
     if order_id:
         payload['order_id'] = str(order_id)
     if pair:
         payload['pair'] = pair
-
-    headers, payload = get_signed_headers(payload)
+    
+    headers, payload, params_string = get_signed_headers(payload)
     headers['Content-Type'] = 'application/x-www-form-urlencoded'
-
+    
     try:
-        res = requests.post(url, headers=headers, data=payload, timeout=10)
+        res = requests.post(url, headers=headers, data=params_string, timeout=10)
         res.raise_for_status()
         data = res.json()
         logger.info(f"Cancel result: {data}")
@@ -195,9 +238,7 @@ def cancel_order(order_id=None, pair=None):
         logger.error(f"cancel_order failed: {e}")
         return None
 
-# ────────────────────────────────────────────────
-#                 TRADING LOGIC
-# ────────────────────────────────────────────────
+# ==================== TRADING LOGIC CLASSES ====================
 
 class VolatilityAnalyzer:
     def __init__(self, period=14):
@@ -214,11 +255,11 @@ class VolatilityAnalyzer:
         if not hist or len(hist) < self.period + 1:
             return None
         prices = list(hist)
-        trs = [max(prices[i], prices[i-1]) - min(prices[i], prices[i-1]) for i in range(1, len(prices))]
+        trs = [max(prices[i], prices[i-1]) - min(prices[i], prices[i-1]) 
+               for i in range(1, len(prices))]
         if len(trs) < self.period:
             return None
         return sum(trs[-self.period:]) / self.period
-
 
 class AssetSelector:
     def __init__(self):
@@ -247,7 +288,6 @@ class AssetSelector:
         logger.info(f"Top volume+momentum pairs: {top_pairs}")
         return top_pairs
 
-
 class TradingBot:
     def __init__(self):
         self.volatility = VolatilityAnalyzer(ATR_PERIOD)
@@ -263,6 +303,7 @@ class TradingBot:
         total = 0.0
         wallet = bal.get('Wallet', {})
         tickers = get_all_tickers()
+        
         for asset, amounts in wallet.items():
             qty = float(amounts.get('Free', 0)) + float(amounts.get('Lock', 0))
             if asset == 'USD':
@@ -293,10 +334,10 @@ class TradingBot:
     def calculate_position_size(self, equity, price, atr):
         if not atr or atr <= 0 or equity <= 0:
             return 0.0
-        risk_amount = equity * 0.02
+        risk_amount = equity * 0.02  # Risk 2% per trade
         stop_distance = STOP_LOSS_ATR * atr
         size = risk_amount / stop_distance
-        max_value = equity * 0.25
+        max_value = equity * 0.25  # Max 25% of equity per position
         max_size = max_value / price
         return min(size, max_size)
 
@@ -311,6 +352,7 @@ class TradingBot:
         if (atr / price) > MIN_ATR_PERCENT:
             score += 0.2
         conf = min(100, abs(score) * 50)
+        
         if score > 0.3 and conf >= 65:
             return 'BUY', conf
         if score < -0.3 and conf >= 65:
@@ -323,9 +365,13 @@ class TradingBot:
         if equity <= 0:
             logger.warning("No equity → cannot trade")
             return False
+        
         qty = self.calculate_position_size(equity, price, atr)
         if qty <= 0:
+            logger.warning(f"Invalid position size: {qty}")
             return False
+        
+        # Place market order
         result = place_order(pair, signal, qty)
         if result and result.get('Success'):
             sl = price - (STOP_LOSS_ATR * atr) if signal == 'BUY' else price + (STOP_LOSS_ATR * atr)
@@ -338,7 +384,7 @@ class TradingBot:
                 'take_profit': tp,
                 'entry_time': datetime.now()
             }
-            logger.info(f"OPEN {signal} {pair} | size={qty:.6f} | entry≈${price:.4f}")
+            logger.info(f"OPEN {signal} {pair} | size={qty:.6f} | entry=${price:.4f}")
             return True
         return False
 
@@ -348,6 +394,7 @@ class TradingBot:
         tp = pos['take_profit']
         should_exit = False
         reason = ""
+        
         if side == 'BUY':
             if current_price <= sl:
                 should_exit = True
@@ -367,64 +414,79 @@ class TradingBot:
             close_side = 'SELL' if side == 'BUY' else 'BUY'
             result = place_order(pair, close_side, pos['size'])
             if result and result.get('Success'):
-                logger.info(f"CLOSE {pair} | {reason} | exit≈${current_price:.4f}")
+                logger.info(f"CLOSE {pair} | {reason} | exit=${current_price:.4f}")
                 del self.positions[pair]
             return True
         return False
 
     def run(self):
         self.running = True
-        logger.info("Roostoo Mock Trading Bot started")
-
+        logger.info("Roostoo Trading Bot started")
+        
+        # Validate API keys first
         if not check_api_keys():
             logger.critical("API keys missing → exiting")
+            logger.critical("Please add your actual API keys to API_KEY and SECRET_KEY variables")
             return
-
+        
+        # Test API connectivity
+        logger.info("Testing API connectivity...")
+        srv_time = get_server_time()
+        if not srv_time:
+            logger.critical("Cannot reach Roostoo API → check network / BASE_URL")
+            return
+        logger.info("API connectivity OK")
+        
+        # Load available pairs
         self.selector.fetch_available_pairs()
         if not self.selector.available_pairs:
             logger.critical("No tradable pairs → exiting")
             return
-
-        # Quick time sync check
-        srv_time = get_server_time()
-        if srv_time:
-            diff = abs(srv_time - int(time.time() * 1000))
-            if diff > 60000:
-                logger.warning(f"Local clock drift detected: {diff//1000} seconds")
-
+        
+        # Check balance
+        balance = get_balance()
+        if balance:
+            logger.info(f"Initial balance retrieved successfully")
+        
+        logger.info("Starting main trading loop...")
+        
         while self.running:
             try:
                 self.update_active_pairs()
                 equity = self.get_total_equity()
                 pending = get_pending_count()
+                
                 if pending is not None and pending > 0 and len(self.positions) == 0:
-                    logger.warning(f"API shows {pending} pending orders but local state empty → possible desync")
-
-                logger.info(f"Equity: ${equity:,.2f} | Local positions: {len(self.positions)}")
-
+                    logger.warning(f"API shows {pending} pending orders but local state empty")
+                
+                logger.info(f"Equity: ${equity:,.2f} | Positions: {len(self.positions)}")
+                
                 for pair in list(self.active_pairs):
                     md = self.get_market_data(pair)
                     if not md or md['price'] <= 0:
                         continue
-
+                    
                     price = md['price']
                     self.volatility.update_price(pair, price)
                     atr = self.volatility.calculate_atr(pair)
-
+                    
+                    # Check exits for existing positions
                     if pair in self.positions:
                         self.check_exits(pair, self.positions[pair], price, atr)
                         continue
-
+                    
+                    # Check if we can open new position
                     if len(self.positions) >= MAX_POSITIONS:
                         continue
-
+                    
+                    # Generate and execute signal
                     signal, conf = self.generate_signal(pair, md, atr)
                     if signal != 'HOLD' and conf >= 65:
-                        logger.info(f"Signal → {signal} {pair}  (conf {conf:.1f}%)")
+                        logger.info(f"Signal → {signal} {pair} (conf {conf:.1f}%)")
                         self.execute_trade(pair, signal, conf, md, atr)
-
+                
                 time.sleep(TICK_INTERVAL)
-
+                
             except KeyboardInterrupt:
                 logger.info("KeyboardInterrupt → shutting down")
                 self.running = False
@@ -432,14 +494,15 @@ class TradingBot:
                 logger.error(f"Main loop exception: {type(e).__name__} - {e}")
                 time.sleep(10)
 
-
 if __name__ == "__main__":
+    # Test API connectivity before starting bot
+    logger.info("Testing Roostoo API connectivity...")
     srv = get_server_time()
     if srv:
-        logger.info(f"API reachable | server time offset ok")
+        logger.info("API reachable | server time offset ok")
     else:
-        logger.error("Cannot reach Roostoo mock API → check network / BASE_URL")
+        logger.error("Cannot reach Roostoo API → check network / BASE_URL")
         sys.exit(1)
-
+    
     bot = TradingBot()
     bot.run()
