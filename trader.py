@@ -23,7 +23,6 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # ==================== CONFIG ====================
-# REPLACE THESE WITH YOUR ACTUAL API KEYS FROM ROOSTOO
 API_KEY = "1KPVEQfk2NJ6AdxP4tPb36MhKNbOFhNLhVjAjKpVq9TDPcusQONWODpe2iVjEOca"
 SECRET_KEY = "ss3x6EvpsIsunKx1takYy99rW1Mifiy6h7edKWePc2JdW1zUE1zn9x70KNMtT4zq"
 
@@ -300,19 +299,39 @@ class TradingBot:
         bal = get_balance()
         if not bal or not bal.get('Success'):
             return 0.0
-        total = 0.0
-        wallet = bal.get('Wallet', {})
-        tickers = get_all_tickers()
         
+        total = 0.0
+        
+        # Handle both old and new API response formats
+        wallet = bal.get('SpotWallet') or bal.get('Wallet', {})
+        
+        # Also check MarginWallet if you have margin positions
+        margin_wallet = bal.get('MarginWallet', {})
+        
+        # Combine both wallets for total equity
         for asset, amounts in wallet.items():
             qty = float(amounts.get('Free', 0)) + float(amounts.get('Lock', 0))
             if asset == 'USD':
                 total += qty
             else:
                 pair = f"{asset}/USD"
+                tickers = get_all_tickers()
                 if pair in tickers:
                     price = float(tickers[pair].get('LastPrice', 0))
                     total += qty * price
+        
+        # Add margin wallet if it has any assets
+        for asset, amounts in margin_wallet.items():
+            qty = float(amounts.get('Free', 0)) + float(amounts.get('Lock', 0))
+            if asset == 'USD':
+                total += qty
+            else:
+                pair = f"{asset}/USD"
+                tickers = get_all_tickers()
+                if pair in tickers:
+                    price = float(tickers[pair].get('LastPrice', 0))
+                    total += qty * price
+        
         return total
 
     def update_active_pairs(self):
@@ -444,9 +463,17 @@ class TradingBot:
             return
         
         # Check balance
+        # Check balance
         balance = get_balance()
         if balance:
+            # Get wallet from either SpotWallet or Wallet
+            wallet = balance.get('SpotWallet') or balance.get('Wallet', {})
+            usd_balance = wallet.get('USD', {}).get('Free', 0)
             logger.info(f"Initial balance retrieved successfully")
+            logger.info(f"USD Balance: ${usd_balance:,.2f}")
+            
+            if usd_balance == 0:
+                logger.warning("⚠️  Zero USD balance detected!")
         
         logger.info("Starting main trading loop...")
         
