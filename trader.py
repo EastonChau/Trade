@@ -1,6 +1,3 @@
-#!/usr/bin/env python
-# -*- coding: utf-8 -*-
-
 import requests
 import time
 import hmac
@@ -10,8 +7,6 @@ import numpy as np
 from collections import deque
 from datetime import datetime
 import logging
-from textblob import TextBlob
-import feedparser
 import sys
 
 logging.basicConfig(
@@ -24,10 +19,10 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# ============= INSERT YOUR API KEYS HERE =============
-API_KEY = "1KPVEQfk2NJ6AdxP4tPb36MhKNbOFhNLhVjAjKpVq9TDPcusQONWODpe2iVjEOca"
+
+API_KEY = "1KPVEQfk2NJ6AdxP4tPb36MhKNbOFhNLhVjAjKpVq9TDPcusQONWODpe2iVjEOca"     
 SECRET_KEY = "ss3x6EvpsIsunKx1takYy99rW1Mifiy6h7edKWePc2JdW1zUE1zn9x70KNMtT4zq"
-# ====================================================
+
 
 BASE_URL = "https://mock-api.roostoo.com"
 
@@ -35,14 +30,15 @@ MAX_POSITIONS = 2
 ATR_PERIOD = 14
 STOP_LOSS_ATR = 1.5
 TAKE_PROFIT_ATR = 3.0
-TICK_INTERVAL = 60
+TICK_INTERVAL = 60          # seconds
 MIN_VOLUME_USD = 1000000
 MIN_ATR_PERCENT = 0.005
 
-def get_timestamp():
+def get_timestamp_ms():
     return str(int(time.time() * 1000))
 
 def generate_signature(payload):
+    # Sort keys alphabetically → REQUIRED by Roostoo docs
     sorted_keys = sorted(payload.keys())
     total_params = "&".join(f"{k}={payload[k]}" for k in sorted_keys)
     signature = hmac.new(
@@ -50,32 +46,20 @@ def generate_signature(payload):
         total_params.encode('utf-8'),
         hashlib.sha256
     ).hexdigest()
-    return signature, total_params
+    return signature
 
-def get_signed_headers(payload=None):
-    if payload is None:
-        payload = {}
-    payload['timestamp'] = get_timestamp()
-    signature, total_params = generate_signature(payload)
+def get_signed_headers(payload):
+    payload['timestamp'] = get_timestamp_ms()
+    signature = generate_signature(payload)
     headers = {
         'RST-API-KEY': API_KEY,
-        'MSG-SIGNATURE': signature
+        'MSG-SIGNATURE': signature,
     }
-    return headers, payload, total_params
+    return headers, payload
 
 def check_api_keys():
-    """Validate API keys before starting"""
-    if not API_KEY or API_KEY == "":
-        logger.error("API_KEY is not set. Please add your API key at line 21")
-        return False
-    if not SECRET_KEY or SECRET_KEY == "":
-        logger.error("SECRET_KEY is not set. Please add your secret key at line 22")
-        return False
-    if API_KEY == "YOUR_API_KEY_HERE" or API_KEY == "MYAPIKEY":
-        logger.error("API_KEY is still using placeholder value. Replace with your actual API key")
-        return False
-    if SECRET_KEY == "YOUR_SECRET_KEY_HERE" or SECRET_KEY == "MYAPISECRET":
-        logger.error("SECRET_KEY is still using placeholder value. Replace with your actual secret key")
+    if not API_KEY or not SECRET_KEY:
+        logger.error("API_KEY and/or SECRET_KEY not set. Edit lines ~21-22.")
         return False
     return True
 
@@ -83,177 +67,104 @@ def get_server_time():
     url = f"{BASE_URL}/v3/serverTime"
     try:
         res = requests.get(url, timeout=10)
-        if res.status_code == 200:
-            return res.json()
-        else:
-            logger.error(f"Server time API error: HTTP {res.status_code} - {res.text}")
-            return None
-    except requests.exceptions.Timeout:
-        logger.error(f"Server time timeout: {BASE_URL} did not respond within 10 seconds")
-        return None
-    except requests.exceptions.ConnectionError:
-        logger.error(f"Server time connection error: Cannot connect to {BASE_URL}")
-        return None
+        res.raise_for_status()
+        return res.json().get('ServerTime')
     except Exception as e:
-        logger.error(f"Server time unexpected error: {type(e).__name__} - {e}")
+        logger.error(f"get_server_time failed: {e}")
         return None
 
 def get_exchange_info():
     url = f"{BASE_URL}/v3/exchangeInfo"
     try:
         res = requests.get(url, timeout=10)
-        if res.status_code == 200:
-            return res.json()
-        else:
-            logger.error(f"Exchange info API error: HTTP {res.status_code} - {res.text}")
-            return None
-    except requests.exceptions.Timeout:
-        logger.error(f"Exchange info timeout: {BASE_URL} did not respond within 10 seconds")
-        return None
-    except requests.exceptions.ConnectionError:
-        logger.error(f"Exchange info connection error: Cannot connect to {BASE_URL}")
-        return None
+        res.raise_for_status()
+        return res.json()
     except Exception as e:
-        logger.error(f"Exchange info unexpected error: {type(e).__name__} - {e}")
+        logger.error(f"get_exchange_info failed: {e}")
         return None
 
 def get_all_tickers():
+    payload = {'timestamp': get_timestamp_ms()}
     url = f"{BASE_URL}/v3/ticker"
-    params = {'timestamp': get_timestamp()}
     try:
-        res = requests.get(url, params=params, timeout=10)
-        if res.status_code == 200:
-            data = res.json()
-            if data.get('Success'):
-                return data.get('Data', {})
-            else:
-                logger.error(f"Ticker API returned error: {data.get('ErrMsg', 'Unknown error')}")
-                return {}
+        res = requests.get(url, params=payload, timeout=10)
+        res.raise_for_status()
+        data = res.json()
+        if data.get('Success'):
+            return data.get('Data', {})
         else:
-            logger.error(f"Ticker API error: HTTP {res.status_code} - {res.text[:200]}")
+            logger.error(f"Ticker error: {data.get('ErrMsg', 'Unknown')}")
             return {}
-    except requests.exceptions.Timeout:
-        logger.error(f"Ticker timeout: {BASE_URL} did not respond within 10 seconds")
-        return {}
-    except requests.exceptions.ConnectionError:
-        logger.error(f"Ticker connection error: Cannot connect to {BASE_URL}")
-        return {}
     except Exception as e:
-        logger.error(f"Ticker unexpected error: {type(e).__name__} - {e}")
+        logger.error(f"get_all_tickers failed: {e}")
         return {}
 
 def get_balance():
-    if not API_KEY or not SECRET_KEY:
-        logger.error("Cannot get balance: API keys not configured")
+    if not check_api_keys():
         return None
-    
     url = f"{BASE_URL}/v3/balance"
-    headers, payload, _ = get_signed_headers({})
+    payload = {}  # timestamp added in get_signed_headers
+    headers, payload = get_signed_headers(payload)
     try:
         res = requests.get(url, headers=headers, params=payload, timeout=10)
-        
-        if res.status_code == 200:
-            data = res.json()
-            if data.get('Success'):
-                return data
-            else:
-                error_msg = data.get('ErrMsg', 'Unknown error')
-                logger.error(f"Balance API returned error: {error_msg}")
-                if "signature" in error_msg.lower() or "auth" in error_msg.lower():
-                    logger.error("Possible causes: Invalid API_KEY or SECRET_KEY, or incorrect signature generation")
-                return None
-        elif res.status_code == 401:
-            logger.error(f"Balance API authentication failed: HTTP 401 - Invalid API_KEY or SECRET_KEY")
-            logger.error(f"Check that your API_KEY '{API_KEY[:5]}...' and SECRET_KEY are correct")
-            return None
-        elif res.status_code == 403:
-            logger.error(f"Balance API forbidden: HTTP 403 - Your API key may not have permission for this endpoint")
-            return None
+        res.raise_for_status()
+        data = res.json()
+        if data.get('Success'):
+            return data
         else:
-            logger.error(f"Balance API error: HTTP {res.status_code} - {res.text[:200]}")
+            logger.error(f"Balance error: {data.get('ErrMsg', 'Unknown')}")
             return None
-            
-    except requests.exceptions.Timeout:
-        logger.error(f"Balance timeout: {BASE_URL} did not respond within 10 seconds")
-        return None
-    except requests.exceptions.ConnectionError:
-        logger.error(f"Balance connection error: Cannot connect to {BASE_URL}")
-        return None
-    except json.JSONDecodeError as e:
-        logger.error(f"Balance API returned invalid JSON: {e}")
-        logger.error(f"Response text: {res.text[:200] if 'res' in locals() else 'No response'}")
-        return None
     except Exception as e:
-        logger.error(f"Balance unexpected error: {type(e).__name__} - {e}")
+        logger.error(f"get_balance failed: {e}")
         return None
 
 def place_order(pair, side, quantity, price=None):
-    if not API_KEY or not SECRET_KEY:
-        logger.error("Cannot place order: API keys not configured")
+    if not check_api_keys():
         return None
-    
     url = f"{BASE_URL}/v3/place_order"
     order_type = "LIMIT" if price else "MARKET"
     payload = {
         'pair': pair,
         'side': side.upper(),
         'type': order_type,
-        'quantity': str(quantity)
+        'quantity': str(quantity),
     }
-    if price:
+    if price is not None:
         payload['price'] = str(price)
-    
-    headers, _, total_params = get_signed_headers(payload)
+    # timestamp added below
+    headers, payload = get_signed_headers(payload)
     headers['Content-Type'] = 'application/x-www-form-urlencoded'
-    
+
     try:
-        res = requests.post(url, headers=headers, data=total_params, timeout=10)
-        
-        if res.status_code == 200:
-            data = res.json()
-            if data.get('Success'):
-                return data
-            else:
-                error_msg = data.get('ErrMsg', 'Unknown error')
-                logger.error(f"Place order API error: {error_msg}")
-                return None
-        elif res.status_code == 401:
-            logger.error(f"Place order authentication failed: HTTP 401 - Invalid API keys")
-            return None
-        elif res.status_code == 400:
-            logger.error(f"Place order bad request: HTTP 400 - Check pair, quantity, or side parameters")
-            return None
+        res = requests.post(url, headers=headers, data=payload, timeout=10)
+        res.raise_for_status()
+        data = res.json()
+        if data.get('Success'):
+            return data
         else:
-            logger.error(f"Place order error: HTTP {res.status_code} - {res.text[:200]}")
+            logger.error(f"Place order failed: {data.get('ErrMsg', 'Unknown')}")
             return None
-            
-    except requests.exceptions.Timeout:
-        logger.error(f"Place order timeout: {BASE_URL} did not respond within 10 seconds")
-        return None
     except Exception as e:
-        logger.error(f"Place order unexpected error: {type(e).__name__} - {e}")
+        logger.error(f"place_order failed: {e}")
         return None
 
 def cancel_order(order_id=None, pair=None):
+    if not check_api_keys():
+        return None
     url = f"{BASE_URL}/v3/cancel_order"
     payload = {}
     if order_id:
         payload['order_id'] = str(order_id)
-    elif pair:
+    if pair:
         payload['pair'] = pair
-    
-    headers, _, total_params = get_signed_headers(payload)
+    headers, payload = get_signed_headers(payload)
     headers['Content-Type'] = 'application/x-www-form-urlencoded'
-    
     try:
-        res = requests.post(url, headers=headers, data=total_params, timeout=10)
-        if res.status_code == 200:
-            return res.json()
-        else:
-            logger.error(f"Cancel order error: HTTP {res.status_code}")
-            return None
+        res = requests.post(url, headers=headers, data=payload, timeout=10)
+        res.raise_for_status()
+        return res.json()
     except Exception as e:
-        logger.error(f"Cancel order error: {e}")
+        logger.error(f"cancel_order failed: {e}")
         return None
 
 class VolatilityAnalyzer:
@@ -261,496 +172,223 @@ class VolatilityAnalyzer:
         self.period = period
         self.price_history = {}
         self.atr_values = {}
-    
+
     def update_price(self, pair, price):
         if pair not in self.price_history:
             self.price_history[pair] = deque(maxlen=self.period + 1)
         self.price_history[pair].append(price)
-    
+
     def calculate_atr(self, pair):
         if pair not in self.price_history or len(self.price_history[pair]) < self.period + 1:
             return None
-        
         prices = list(self.price_history[pair])
         true_ranges = []
-        
         for i in range(1, len(prices)):
             high = max(prices[i], prices[i-1])
             low = min(prices[i], prices[i-1])
-            true_range = high - low
-            true_ranges.append(true_range)
-        
+            true_ranges.append(high - low)
         if len(true_ranges) >= self.period:
             atr = sum(true_ranges[-self.period:]) / self.period
             self.atr_values[pair] = atr
             return atr
-        
         return None
-
-class SentimentAnalyzer:
-    def __init__(self):
-        self.sentiment_history = {}
-        self.sentiment_available = True
-    
-    def get_crypto_panic_sentiment(self, symbol):
-        try:
-            api_key = "YOUR_CRYPTOPANIC_API_KEY"
-            if api_key == "YOUR_CRYPTOPANIC_API_KEY":
-                return 0
-            url = f"https://cryptopanic.com/api/v1/posts/"
-            params = {
-                'auth_token': api_key,
-                'currencies': symbol,
-                'kind': 'news'
-            }
-            response = requests.get(url, params=params, timeout=5)
-            if response.status_code == 200:
-                data = response.json()
-                sentiments = []
-                for post in data.get('results', [])[:20]:
-                    blob = TextBlob(post.get('title', ''))
-                    sentiments.append(blob.sentiment.polarity)
-                if sentiments:
-                    return np.mean(sentiments)
-        except Exception as e:
-            logger.debug(f"CryptoPanic error for {symbol}: {e}")
-        return 0
-    
-    def get_reddit_sentiment(self, symbol):
-        try:
-            url = f"https://api.pushshift.io/reddit/search/submission/"
-            params = {
-                'subreddit': 'CryptoCurrency',
-                'q': symbol,
-                'sort': 'desc',
-                'size': 25,
-                'after': int(time.time()) - 86400
-            }
-            response = requests.get(url, params=params, timeout=5)
-            if response.status_code == 200:
-                data = response.json()
-                sentiments = []
-                for post in data.get('data', []):
-                    blob = TextBlob(post.get('title', ''))
-                    sentiments.append(blob.sentiment.polarity)
-                if sentiments:
-                    return np.mean(sentiments) * 0.8
-        except Exception as e:
-            logger.debug(f"Reddit error for {symbol}: {e}")
-        return 0
-    
-    def get_fear_greed_index(self):
-        try:
-            url = "https://api.alternative.me/fomo/"
-            response = requests.get(url, timeout=5)
-            if response.status_code == 200:
-                data = response.json()
-                fg_value = int(data['fear_and_greed']['value'])
-                return (fg_value / 50) - 1
-        except Exception as e:
-            logger.debug(f"Fear & Greed error: {e}")
-        return 0
-    
-    def calculate_sentiment(self, symbol):
-        crypto_panic = self.get_crypto_panic_sentiment(symbol)
-        reddit = self.get_reddit_sentiment(symbol)
-        fear_greed = self.get_fear_greed_index()
-        
-        sentiment = (crypto_panic * 0.4) + (reddit * 0.3) + (fear_greed * 0.3)
-        
-        if symbol not in self.sentiment_history:
-            self.sentiment_history[symbol] = deque(maxlen=20)
-        self.sentiment_history[symbol].append(sentiment)
-        
-        return sentiment
-    
-    def get_sentiment_trend(self, symbol):
-        if symbol not in self.sentiment_history or len(self.sentiment_history[symbol]) < 10:
-            return 0
-        recent = list(self.sentiment_history[symbol])[-10:]
-        trend = np.polyfit(range(len(recent)), recent, 1)[0]
-        return trend
 
 class AssetSelector:
     def __init__(self):
         self.available_pairs = []
         self.ranked_pairs = []
-    
+
     def fetch_available_pairs(self):
-        exchange_info = get_exchange_info()
-        if exchange_info and exchange_info.get('TradePairs'):
-            self.available_pairs = list(exchange_info['TradePairs'].keys())
+        ex_info = get_exchange_info()
+        if ex_info and 'TradePairs' in ex_info:
+            self.available_pairs = list(ex_info['TradePairs'].keys())
             logger.info(f"Found {len(self.available_pairs)} tradable pairs")
             return self.available_pairs
-        else:
-            logger.error("Failed to fetch exchange info - cannot get tradable pairs")
-            return []
-    
+        logger.error("Failed to get trade pairs")
+        return []
+
     def rank_assets_by_volume(self, tickers):
-        assets_with_metrics = []
-        
+        assets = []
         for pair, data in tickers.items():
-            coin_trade_value = data.get('CoinTradeValue', 0)
-            last_price = data.get('LastPrice', 0)
-            change_24h = abs(data.get('Change', 0))
-            
-            if coin_trade_value > MIN_VOLUME_USD and last_price > 0:
-                score = coin_trade_value * (1 + change_24h)
-                assets_with_metrics.append({
+            vol = data.get('CoinTradeValue', 0)
+            price = data.get('LastPrice', 0)
+            change = abs(data.get('Change', 0))
+            if vol > MIN_VOLUME_USD and price > 0:
+                score = vol * (1 + change)
+                assets.append({
                     'pair': pair,
-                    'volume': coin_trade_value,
-                    'price': last_price,
-                    'volatility_24h': change_24h,
+                    'volume': vol,
                     'score': score
                 })
-        
-        assets_with_metrics.sort(key=lambda x: x['score'], reverse=True)
-        self.ranked_pairs = [a['pair'] for a in assets_with_metrics]
-        
+        assets.sort(key=lambda x: x['score'], reverse=True)
+        self.ranked_pairs = [a['pair'] for a in assets]
         if self.ranked_pairs:
-            logger.info(f"Top 10 assets by volume: {self.ranked_pairs[:10]}")
-        else:
-            logger.warning(f"No assets met minimum volume filter of ${MIN_VOLUME_USD:,.0f}")
-        
+            logger.info(f"Top ranked pairs: {self.ranked_pairs[:10]}")
         return self.ranked_pairs[:MAX_POSITIONS * 2]
 
 class TradingBot:
     def __init__(self):
         self.volatility = VolatilityAnalyzer(ATR_PERIOD)
-        self.sentiment = SentimentAnalyzer()
         self.asset_selector = AssetSelector()
-        self.positions = {}
+        self.positions = {}  # pair → dict
         self.running = False
-        self.balance_history = deque(maxlen=100)
         self.active_trading_pairs = []
-        self.api_healthy = True
-    
+
     def get_total_equity(self):
-        balance_data = get_balance()
-        if not balance_data or not balance_data.get('Success'):
-            if balance_data is None:
-                logger.error("Failed to get balance - API may be down or keys invalid")
-            else:
-                logger.error(f"Balance error: {balance_data.get('ErrMsg', 'Unknown')}")
+        bal = get_balance()
+        if not bal or not bal.get('Success'):
             return 0
-        
-        total_usd = 0
-        wallet = balance_data.get('Wallet', {})
-        
-        if not wallet:
-            logger.warning("Wallet is empty - no funds available")
-            return 0
-        
-        ticker_data = get_all_tickers()
-        
-        for asset, data in wallet.items():
+        total = 0.0
+        wallet = bal.get('Wallet', {})
+        tickers = get_all_tickers()
+        for asset, info in wallet.items():
+            free = info.get('Free', 0)
+            locked = info.get('Lock', 0)
             if asset == 'USD':
-                total_usd += data.get('Free', 0) + data.get('Lock', 0)
+                total += free + locked
             else:
                 pair = f"{asset}/USD"
-                if pair in ticker_data:
-                    price = ticker_data[pair].get('LastPrice', 0)
-                    if price > 0:
-                        total_usd += (data.get('Free', 0) + data.get('Lock', 0)) * price
-        
-        self.balance_history.append(total_usd)
-        return total_usd
-    
+                if pair in tickers:
+                    price = tickers[pair].get('LastPrice', 0)
+                    total += (free + locked) * price
+        return total
+
     def update_trading_pairs(self):
         tickers = get_all_tickers()
-        if not tickers:
-            logger.warning("No ticker data available - skipping pair update")
-            return
-        
-        ranked = self.asset_selector.rank_assets_by_volume(tickers)
-        
-        if ranked:
-            self.active_trading_pairs = ranked[:MAX_POSITIONS * 2]
-            logger.info(f"Active trading pairs: {self.active_trading_pairs}")
-        else:
-            logger.warning("No active trading pairs selected - volume filter may be too strict")
-    
+        if tickers:
+            self.active_trading_pairs = self.asset_selector.rank_assets_by_volume(tickers)
+            logger.info(f"Active pairs ({len(self.active_trading_pairs)}): {self.active_trading_pairs}")
+
     def get_market_data(self, pair):
         tickers = get_all_tickers()
-        if not tickers:
-            return None
-        
-        if pair not in tickers:
-            return None
-        
-        data = tickers[pair]
-        return {
-            'price': float(data.get('LastPrice', 0)),
-            'bid': float(data.get('MaxBid', 0)),
-            'ask': float(data.get('MinAsk', 0)),
-            'change_24h': float(data.get('Change', 0)),
-            'volume_24h': float(data.get('CoinTradeValue', 0))
-        }
-    
+        if pair in tickers:
+            d = tickers[pair]
+            return {
+                'price': float(d.get('LastPrice', 0)),
+                'change_24h': float(d.get('Change', 0)),
+                'volume_24h': float(d.get('CoinTradeValue', 0))
+            }
+        return None
+
     def calculate_position_size(self, equity, price, atr):
-        if atr is None or atr == 0:
-            logger.warning(f"Cannot calculate position size: ATR is zero or None")
+        if not atr or atr <= 0 or equity <= 0:
             return 0
-        
-        if equity <= 0:
-            logger.warning(f"Cannot calculate position size: Equity is ${equity:.2f}")
-            return 0
-        
-        risk_per_trade = equity * 0.02
-        stop_distance = STOP_LOSS_ATR * atr
-        position_size = risk_per_trade / stop_distance
-        
-        max_position_value = equity * 0.25
-        max_size_by_value = max_position_value / price
-        
-        return min(position_size, max_size_by_value)
-    
-    def generate_signal(self, pair, market_data, atr, sentiment_score, sentiment_trend):
-        if atr is None or atr == 0:
+        risk = equity * 0.02
+        stop_dist = STOP_LOSS_ATR * atr
+        size = risk / stop_dist
+        max_value = equity * 0.25
+        max_size = max_value / price
+        return min(size, max_size)
+
+    def generate_signal(self, pair, market_data, atr):
+        if not market_data or not atr:
             return 'HOLD', 0
-        
         price = market_data['price']
         if price <= 0:
             return 'HOLD', 0
-        
-        change_24h = market_data['change_24h']
-        volume = market_data['volume_24h']
-        
-        technical_score = 0
-        if change_24h > 0.02:
-            technical_score += 0.3
-        elif change_24h < -0.02:
-            technical_score -= 0.3
-        
+        change = market_data['change_24h']
+        score = change * 10  # simple momentum
         atr_pct = atr / price
         if atr_pct > MIN_ATR_PERCENT:
-            technical_score += 0.2
-        elif atr_pct < 0.003:
-            technical_score -= 0.2
-        
-        volume_score = min(volume / 10000000, 0.3)
-        if change_24h > 0:
-            technical_score += volume_score
-        else:
-            technical_score -= volume_score
-        
-        combined_score = (sentiment_score * 0.6) + (technical_score * 0.4)
-        
-        if sentiment_trend > 0 and combined_score > 0:
-            combined_score *= 1.2
-        elif sentiment_trend < 0 and combined_score < 0:
-            combined_score *= 1.2
-        
-        confidence = abs(combined_score) * 100
-        confidence = min(100, confidence)
-        
-        if combined_score > 0.3 and confidence > 65:
+            score += 0.2
+        confidence = min(100, abs(score) * 50)
+        if score > 0.3 and confidence > 65:
             return 'BUY', confidence
-        elif combined_score < -0.3 and confidence > 65:
+        if score < -0.3 and confidence > 65:
             return 'SELL', confidence
-        
         return 'HOLD', confidence
-    
+
     def execute_trade(self, pair, signal, confidence, market_data, atr):
         price = market_data['price']
         equity = self.get_total_equity()
-        
         if equity <= 0:
-            logger.error(f"Cannot execute trade: No equity available (${equity:.2f})")
+            logger.warning("No equity available")
             return False
-        
-        position_size = self.calculate_position_size(equity, price, atr)
-        
-        if position_size <= 0:
-            logger.warning(f"Position size zero for {pair} - equity: ${equity:.2f}, atr: ${atr:.2f}")
+        qty = self.calculate_position_size(equity, price, atr)
+        if qty <= 0:
             return False
-        
-        side = signal
-        order_result = place_order(pair, side, position_size)
-        
-        if order_result and order_result.get('Success'):
-            order_detail = order_result.get('OrderDetail', {})
-            if order_detail.get('Status') in ['FILLED', 'PENDING']:
-                stop_loss = price - (STOP_LOSS_ATR * atr) if side == 'BUY' else price + (STOP_LOSS_ATR * atr)
-                take_profit = price + (TAKE_PROFIT_ATR * atr) if side == 'BUY' else price - (TAKE_PROFIT_ATR * atr)
-                
-                self.positions[pair] = {
-                    'side': side,
-                    'entry_price': price,
-                    'size': position_size,
-                    'stop_loss': stop_loss,
-                    'take_profit': take_profit,
-                    'entry_time': datetime.now(),
-                    'confidence': confidence,
-                    'atr_entry': atr
-                }
-                
-                logger.info(f"ENTER {pair} {side} | Size: {position_size:.6f} | Price: ${price:.2f}")
-                logger.info(f"Stop Loss: ${stop_loss:.2f} | Take Profit: ${take_profit:.2f}")
-                return True
-            else:
-                logger.error(f"Order status unexpected: {order_detail.get('Status')}")
-                return False
-        
-        if order_result:
-            logger.error(f"Order failed for {pair}: {order_result.get('ErrMsg', 'Unknown error')}")
-        return False
-    
-    def check_exit_conditions(self, pair, position, current_price, atr):
-        exit_reason = None
-        
-        if position['side'] == 'BUY':
-            if current_price <= position['stop_loss']:
-                exit_reason = 'STOP_LOSS'
-            elif current_price >= position['take_profit']:
-                exit_reason = 'TAKE_PROFIT'
-        else:
-            if current_price >= position['stop_loss']:
-                exit_reason = 'STOP_LOSS'
-            elif current_price <= position['take_profit']:
-                exit_reason = 'TAKE_PROFIT'
-        
-        if exit_reason:
-            self.close_position(pair, position, current_price, exit_reason)
+        result = place_order(pair, signal, qty)
+        if result and result.get('Success'):
+            logger.info(f"EXECUTED {signal} {pair} | Qty: {qty:.6f} | Price ~${price:.2f}")
+            sl = price - (STOP_LOSS_ATR * atr) if signal == 'BUY' else price + (STOP_LOSS_ATR * atr)
+            tp = price + (TAKE_PROFIT_ATR * atr) if signal == 'BUY' else price - (TAKE_PROFIT_ATR * atr)
+            self.positions[pair] = {
+                'side': signal,
+                'entry_price': price,
+                'size': qty,
+                'stop_loss': sl,
+                'take_profit': tp
+            }
             return True
-        
-        if atr and position.get('atr_entry'):
-            atr_change = atr / position['atr_entry']
-            if atr_change > 1.5:
-                if position['side'] == 'BUY':
-                    new_stop = current_price - (STOP_LOSS_ATR * atr)
-                    if new_stop > position['stop_loss']:
-                        position['stop_loss'] = new_stop
-                        logger.info(f"Trailing stop updated for {pair}: ${new_stop:.2f}")
-                else:
-                    new_stop = current_price + (STOP_LOSS_ATR * atr)
-                    if new_stop < position['stop_loss']:
-                        position['stop_loss'] = new_stop
-                        logger.info(f"Trailing stop updated for {pair}: ${new_stop:.2f}")
-        
         return False
-    
-    def close_position(self, pair, position, exit_price, reason):
-        side = 'SELL' if position['side'] == 'BUY' else 'BUY'
-        order_result = place_order(pair, side, position['size'])
-        
-        if order_result and order_result.get('Success'):
-            if position['side'] == 'BUY':
-                pnl = (exit_price - position['entry_price']) * position['size']
-            else:
-                pnl = (position['entry_price'] - exit_price) * position['size']
-            
-            logger.info(f"EXIT {pair} | Reason: {reason} | Price: ${exit_price:.2f} | P&L: ${pnl:.2f}")
-            del self.positions[pair]
-        else:
-            logger.error(f"Failed to close position for {pair}: {order_result}")
-    
-    def check_portfolio_limits(self):
-        return len(self.positions) < MAX_POSITIONS
-    
+
+    def check_exit_conditions(self, pair, pos, current_price, atr):
+        side = pos['side']
+        sl = pos['stop_loss']
+        tp = pos['take_profit']
+        if (side == 'BUY' and (current_price <= sl or current_price >= tp)) or \
+           (side == 'SELL' and (current_price >= sl or current_price <= tp)):
+            close_side = 'SELL' if side == 'BUY' else 'BUY'
+            result = place_order(pair, close_side, pos['size'])
+            if result and result.get('Success'):
+                logger.info(f"EXIT {pair} | Price: ${current_price:.2f}")
+                del self.positions[pair]
+            return True
+        return False
+
     def run(self):
         self.running = True
-        
-        logger.info("=" * 60)
-        logger.info("TRADING BOT STARTED")
-        logger.info("=" * 60)
-        
+        logger.info("Roostoo Trading Bot started (mock mode)")
         if not check_api_keys():
-            logger.error("Cannot start bot: API keys not configured properly")
-            logger.error("Please add your API_KEY and SECRET_KEY at lines 21-22")
+            logger.error("API keys missing → stopping")
             return
-        
-        logger.info(f"API_KEY configured: {API_KEY[:5]}...{API_KEY[-4:] if len(API_KEY) > 9 else ''}")
-        
-        available_pairs = self.asset_selector.fetch_available_pairs()
-        if not available_pairs:
-            logger.error("No tradable pairs found. Check API connection and exchange info.")
+
+        self.asset_selector.fetch_available_pairs()
+        if not self.asset_selector.available_pairs:
+            logger.error("No pairs available → stopping")
             return
-        
-        logger.info(f"Total Tradable Assets: {len(available_pairs)}")
-        logger.info(f"Max Positions: {MAX_POSITIONS}")
-        logger.info(f"Stop Loss: {STOP_LOSS_ATR}x ATR | Take Profit: {TAKE_PROFIT_ATR}x ATR")
-        logger.info(f"Min Volume Filter: ${MIN_VOLUME_USD:,.0f}")
-        logger.info("=" * 60)
-        
-        scan_counter = 0
-        
+
         while self.running:
             try:
-                if scan_counter % 5 == 0:
-                    self.update_trading_pairs()
-                
+                self.update_trading_pairs()
                 equity = self.get_total_equity()
-                if equity == 0:
-                    logger.warning("Total equity is $0. Check balance API and wallet funds.")
-                else:
-                    logger.info(f"Total Equity: ${equity:.2f} | Active Positions: {len(self.positions)}")
-                
-                if not self.active_trading_pairs:
-                    time.sleep(TICK_INTERVAL)
-                    scan_counter += 1
-                    continue
-                
-                for pair in self.active_trading_pairs:
-                    market_data = self.get_market_data(pair)
-                    if not market_data or market_data['price'] == 0:
+                logger.info(f"Equity: ${equity:.2f} | Positions: {len(self.positions)}")
+
+                for pair in self.active_trading_pairs[:]:
+                    data = self.get_market_data(pair)
+                    if not data or data['price'] <= 0:
                         continue
-                    
-                    price = market_data['price']
+                    price = data['price']
                     self.volatility.update_price(pair, price)
                     atr = self.volatility.calculate_atr(pair)
-                    
+
                     if pair in self.positions:
                         self.check_exit_conditions(pair, self.positions[pair], price, atr)
                         continue
-                    
-                    if not self.check_portfolio_limits():
-                        break
-                    
-                    symbol = pair.split('/')[0]
-                    sentiment_score = self.sentiment.calculate_sentiment(symbol)
-                    sentiment_trend = self.sentiment.get_sentiment_trend(symbol)
-                    
-                    signal, confidence = self.generate_signal(
-                        pair, market_data, atr, sentiment_score, sentiment_trend
-                    )
-                    
-                    if signal != 'HOLD' and confidence >= 65:
-                        logger.info(f"{pair} | Signal: {signal} | Confidence: {confidence:.1f}%")
-                        logger.info(f"Volume: ${market_data['volume_24h']:,.0f} | 24h Change: {market_data['change_24h']*100:.2f}%")
-                        if atr:
-                            logger.info(f"ATR: ${atr:.2f} ({atr/price*100:.2f}%)")
-                        
-                        self.execute_trade(pair, signal, confidence, market_data, atr)
-                    
-                    time.sleep(0.5)
-                
+
+                    if len(self.positions) >= MAX_POSITIONS:
+                        continue
+
+                    signal, conf = self.generate_signal(pair, data, atr)
+                    if signal != 'HOLD' and conf >= 65:
+                        logger.info(f"Signal {signal} on {pair} ({conf:.1f}%)")
+                        self.execute_trade(pair, signal, conf, data, atr)
+
                 time.sleep(TICK_INTERVAL)
-                scan_counter += 1
-                
             except KeyboardInterrupt:
-                logger.info("Shutdown signal received")
+                logger.info("Shutting down...")
                 self.running = False
-                
-                for pair, position in list(self.positions.items()):
-                    market_data = self.get_market_data(pair)
-                    if market_data:
-                        self.close_position(pair, position, market_data['price'], 'MANUAL_EXIT')
-                break
-                
             except Exception as e:
-                logger.error(f"Main loop error: {type(e).__name__} - {e}")
-                time.sleep(TICK_INTERVAL)
+                logger.error(f"Loop error: {e}")
+                time.sleep(10)
 
 if __name__ == "__main__":
-    logger.info("Starting Roostoo Trading Bot...")
-    
     server_time = get_server_time()
     if server_time:
-        logger.info(f"Connected to Roostoo API | Server Time: {server_time}")
+        logger.info(f"API connected | Server time: {server_time}")
     else:
-        logger.error("Failed to connect to Roostoo API. Check network and BASE_URL.")
+        logger.error("Cannot reach Roostoo API → check network / BASE_URL")
         sys.exit(1)
-    
+
     bot = TradingBot()
     bot.run()
