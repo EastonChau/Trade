@@ -25,8 +25,8 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # ============= INSERT YOUR API KEYS HERE =============
-API_KEY = "M4jgniiiVKr9hEFK1ebfDJRdLWMkUMU0Xrja2UTfzzkZ2KbKwNaLc7DHMFu36yJD"
-SECRET_KEY = "K1Jk6lCsSEpBAktHua73mi4kowWSE9huy1JHS0XbiTT3ilDUTsrayWswniuB6pYF"
+API_KEY = "1KPVEQfk2NJ6AdxP4tPb36MhKNbOFhNLhVjAjKpVq9TDPcusQONWODpe2iVjEOca"
+SECRET_KEY = "ss3x6EvpsIsunKx1takYy99rW1Mifiy6h7edKWePc2JdW1zUE1zn9x70KNMtT4zq"
 # ====================================================
 
 BASE_URL = "https://mock-api.roostoo.com"
