@@ -11,7 +11,7 @@ A Python-based cryptocurrency trading bot that maintains a diversified portfolio
   - Sells when price increases by +2% (Take Profit)
   - Sells when price decreases by -1% (Stop Loss)
   - Risk/Reward Ratio 1:2
-- **Strategy Switching**: Can change trading behavior via simple text file
+- **Strategy Switching**: Can change trading behavior (random, sell, sto, or stop) via text file
 - **Market Orders Only**: Uses market orders for reliable execution
 - **Minimal Logging**: Only logs trades (BUY/SELL)
 
@@ -19,7 +19,7 @@ A Python-based cryptocurrency trading bot that maintains a diversified portfolio
 
 | File | Purpose |
 |------|---------|
-| `trader4.py` | Main trading bot |
+| `trader.py` | Main trading bot |
 | `api.py` | API keys configuration |
 | `strategy.txt` | Strategy selection file |
 | `trade.log` | Trade history log |
