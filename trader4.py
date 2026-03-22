@@ -1,5 +1,3 @@
-cat > trader.py << 'EOF'
-
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 
@@ -458,4 +456,3 @@ if __name__ == "__main__":
     bot = DiversifiedBot(strategy)
     bot.run()
 
-EOF
